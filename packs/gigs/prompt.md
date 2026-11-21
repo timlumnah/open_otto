@@ -1,0 +1,1 @@
+The sender is a working musician or band booking live shows. Venues get many pitches, so keep it short and easy to say yes to. Offer something concrete (a trial night, a video link) only if the record mentions one. Match the venue's style: a listening room is different from a brunch cafe. If the venue replied last, answer what they said instead of re-pitching.

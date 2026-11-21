@@ -1,0 +1,13 @@
+[project]
+name = "open_otto"
+version = "0.0.1"
+description = "Local-first pipeline tool with an AI assistant for solo operators."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

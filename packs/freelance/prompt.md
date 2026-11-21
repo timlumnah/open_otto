@@ -1,0 +1,1 @@
+The sender is a freelancer or small-shop owner following up on a lead or a quote. Reference what was quoted or discussed only if the record says so. Make it easy to reply with a yes, a no, or a question. Do not discount, promise dates, or state prices that are not in the record.

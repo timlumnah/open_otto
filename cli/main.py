@@ -161,9 +161,17 @@ def _voice(args) -> str | None:
         return fh.read()
 
 
+def _extras():
+    """Optional layers from the environment: OPEN_OTTO_GUARD_MODEL=provider:model, OPEN_OTTO_REPAIR=1."""
+    spec = os.environ.get("OPEN_OTTO_GUARD_MODEL")
+    return (get_model(spec) if spec else None), os.environ.get("OPEN_OTTO_REPAIR") == "1"
+
+
 def cmd_draft(conn, args) -> int:
     model = get_model(args.model)
+    guard, repair = _extras()
     did = drafting.draft_for_org(conn, model, args.org, _voice(args), args.force,
+                                 guard=guard, repair=repair,
                                  on_warning=lambda m: print(f"warning: {m}", file=sys.stderr))
     print(f"draft #{did} queued as pending. Review: python -m cli show {did}")
     return 0
@@ -171,7 +179,9 @@ def cmd_draft(conn, args) -> int:
 
 def cmd_draft_followups(conn, args) -> int:
     model = get_model(args.model)
-    outcomes = drafting.draft_followups(conn, model, args.pack, _voice(args), args.days)
+    guard, repair = _extras()
+    outcomes = drafting.draft_followups(conn, model, args.pack, _voice(args), args.days,
+                                        guard=guard, repair=repair)
     if not outcomes:
         print("no follow-ups due")
         return 0

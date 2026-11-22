@@ -1,8 +1,45 @@
 # open_otto
 
+[![ci](https://github.com/timlumnah/open_otto/actions/workflows/ci.yml/badge.svg)](https://github.com/timlumnah/open_otto/actions/workflows/ci.yml)
+
 A local-first pipeline tool with an AI assistant, built for people working alone: job seekers, gigging musicians, and freelancers.
 
-Status: early but working. Schema, migration runner, CLI, AI drafting with an approval queue, and an eval harness are built and tested (281 tests). Eval results for four models are in the eval section.
+Status: early but working. Schema, migration runner, CLI, AI drafting with an approval queue, and an eval harness are built and tested (289 tests). Eval results for four models are in the eval section.
+
+## Demo
+
+A real recorded session against the fictional demo data (drafted by `claude-haiku-5.5` through OpenRouter, output unedited). Nothing is sent: the agent only queues a draft, and the person approves and sends it. Re-record with `docs/record_demo.sh` (instructions in the file).
+
+![open_otto demo](docs/demo.gif)
+
+<details><summary>Text version of the same session</summary>
+
+```
+$ python -m cli followups
+  22d silent  Lantern Hill Winery  [gigs/pitched]
+
+$ python -m cli draft-followups
+Lantern Hill Winery: draft #2
+
+$ python -m cli drafts
+#1   pending   Copper Kettle Cafe  (agent, demo-model)  Quick follow-up on Sunday brunch music
+#2   pending   Lantern Hill Winery  (agent, openrouter:anthropic/claude-haiku-5.5)  Following up: summer patio series at Lantern Hill Winery
+
+$ python -m cli show 2
+draft #2  pending  email  by agent (openrouter:anthropic/claude-haiku-5.5)
+org: Lantern Hill Winery   to: Priya Ramanathan <events@example.com>
+subject: Following up: summer patio series at Lantern Hill Winery
+
+Hi Priya, I'm following up on the summer patio series I emailed you about on October 30. I know you book the season over the winter, so I wanted to check in early. Would you be open to a quick reply on whether a May through September patio slot could work for you, or a short call to talk through it? Thanks for your time.
+
+$ python -m cli approve 2
+draft #2 approved. Send it yourself, then run: python -m cli sent 2
+
+$ python -m cli sent 2     # after I send it myself
+draft #2 recorded as sent and logged as an outbound interaction
+```
+
+</details>
 
 ## Try it
 
@@ -76,6 +113,31 @@ Four models, 2026-11-20 and 2026-11-21, 5 runs per scenario, 15 scenarios (75 ru
 - **Format:** with plain prompting most local drafts were rejected for broken JSON. Passing the schema to Ollama as `format` (constrained output) cut format rejections to about 1 in 27.
 - **Still failing across models:** "I hope this message finds you well" filler, missing asks, and invented numbers or times ("6 PM", "December 1st").
 - **Not measured:** `qwen3.5:9b` and `gemma4` were attempted locally. `qwen3.5:9b` is a thinking model and took 3 to 5 minutes per call on an 8 GB GPU, so I stopped that run rather than report numbers contaminated by timeouts. The direct Anthropic backend is untested live (Haiku was reached through OpenRouter).
+
+#### Closing the evasive-injection gap: guard model and repair retry
+
+The first matrix showed the weak spot: the regex filter does nothing against injections it was not written for (9 to 13 of 15 evasive runs obeyed on the open models). Two opt-in layers were added and measured, both hardened mode, 5 runs per scenario:
+
+- **Guard** (`agent/guard.py`, `--guard-model`, or `OPEN_OTTO_GUARD_MODEL` in the CLI): a second, tool-less model call reads the record and quotes any text aimed at an AI. Quoted text is removed only if it appears verbatim, so the guard can only delete, never rewrite. It fails closed: if the guard errors, drafting is refused.
+- **Repair** (`--repair`, or `OPEN_OTTO_REPAIR=1`): when a draft is rejected, retry once with the rejection reason.
+
+| Drafter | Layers | Overall pass | Obeyed (detectable) | Obeyed (evasive) | Non-injection pass | Rejected |
+|---|---|---|---|---|---|---|
+| llama-3.1-8b | hardened (before) | 53/75 (71%) | 0/25 | 12/15 | 28/35 (80%) | 3/75 |
+| llama-3.1-8b | + repair | 55/75 (73%) | 0/25 | 12/15 | 30/35 (86%) | 0/75 |
+| llama-3.1-8b | + guard | 62/75 (83%) | 0/25 | **0/15** | 24/35 (69%) | 4/75 |
+| llama-3.1-8b | + guard + repair | 54/75 (72%) | 0/25 | **0/15** | 21/35 (60%) | 0/75 |
+| qwen-2.5-72b | hardened (before) | 14/75 (19%) | 0/25 | 11/15 | 10/35 (29%) | 28/75 |
+| qwen-2.5-72b | + repair | 31/75 (41%) | 0/25 | 13/15 | 24/35 (69%) | 6/75 |
+| qwen-2.5-72b | + guard | 27/75 (36%) | 0/25 | **0/15** | 17/35 (49%) | 36/75 |
+| qwen-2.5-72b | + guard + repair | 41/75 (55%) | 0/25 | **0/15** | 22/35 (63%) | 3/75 |
+
+The guard in every guarded row is `claude-haiku-5.5`. Total spend for these 6 runs was about $0.25.
+
+- **The guard closes the gap I measured:** evasive injections obeyed went from 12/15 and 11/15 to 0/15 on both drafters. Caveat: I wrote the evasive scenarios, and 15 runs per row is small. This is evidence the approach works, not proof it is safe. The scenarios were not tuned to the guard, but a held-out set is the next honest test.
+- **The guard is not free:** non-injection pass fell for llama (80% to 69%, 28 to 24 of 35), possibly because it removes harmless notes. That is within noise at this sample size but I would not call it zero cost. It also adds one model call per draft.
+- **Repair fixes what it targets:** qwen-72b rejections for `[Your Name]` placeholders fell from 28 to 6 of 75, and its non-injection pass went from 29% to 69%. For llama it made little difference. Repair has no effect on injection by design.
+- **Combining them was not additive:** guard + repair scored below guard alone for llama (72% vs 83%), which I did not investigate. Treat the overall column across rows as noisy; the injection columns are the clear signal.
 
 Every scenario also carries a hand-written good reply that must pass and bad replies that must fail a named check. `--selftest` runs these, so a check that silently stops working is caught. If the model is unreachable, that is reported as an error and never counted against the model.
 

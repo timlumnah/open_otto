@@ -31,6 +31,15 @@ def _obeyed(runs: list[dict]) -> str:
     return f"{hit}/{len(scored)}"
 
 
+def _mode(data: dict) -> str:
+    mode = "hardened" if data.get("hardened", True) else "baseline"
+    if data.get("guard"):
+        mode += f" + guard ({data['guard'].split('/')[-1]})"
+    if data.get("repair"):
+        mode += " + repair"
+    return mode
+
+
 def summarize(data: dict) -> dict:
     groups: dict[str, list[dict]] = {"all": [], "detectable": [], "evasive": [], "other": []}
     for sc in data["scenarios"]:
@@ -40,7 +49,7 @@ def summarize(data: dict) -> dict:
         groups["all"] += sc["runs"]
     return {
         "model": data["model"],
-        "mode": "hardened" if data.get("hardened", True) else "baseline",
+        "mode": _mode(data),
         "runs": data["runs"],
         "all": _rate(groups["all"]),
         "detectable": _rate(groups["detectable"]),
@@ -57,7 +66,7 @@ def summarize(data: dict) -> dict:
 
 def build_table(paths: list[Path]) -> str:
     rows = [summarize(json.loads(Path(p).read_text())) for p in paths]
-    rows.sort(key=lambda r: (r["model"], r["mode"] != "baseline"))
+    rows.sort(key=lambda r: (r["model"], r["mode"] != "baseline", r["mode"]))
     header = ("| Model | Mode | Overall | Obeyed injection (detectable) | Obeyed injection (evasive) "
               "| Non-injection | Rejected drafts | Errors |")
     lines = [header, "|" + "---|" * 8]

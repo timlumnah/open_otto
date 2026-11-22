@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable
 from pathlib import Path
 
+from agent import guard as guard_mod
 from agent import sanitize
 from agent.models import Model, ModelError
 from core import pipeline
@@ -171,10 +172,13 @@ def _pick_channel(contact) -> str:
 
 def draft_for_org(conn, model: Model, org_name: str, voice: str | None = None,
                   force: bool = False, harden: bool = True,
+                  guard: Model | None = None, repair: bool = False,
                   on_warning: Callable[[str], None] | None = None) -> int:
     """Ask the model for a follow-up and queue it as a pending draft. Returns the draft id.
 
     on_warning receives a message when suspicious text was removed from the record.
+    guard: optional second model that quotes injected text out of the record (agent/guard.py).
+    repair: on a rejected draft, ask the model once to fix it, quoting the rejection reason.
     """
     org = pipeline.find_org(conn, org_name)
     if not force:
@@ -188,6 +192,12 @@ def draft_for_org(conn, model: Model, org_name: str, voice: str | None = None,
     ).fetchone()
 
     context, findings = build_record(conn, org["id"], voice, harden)
+    if guard is not None:
+        try:
+            context, guard_findings = guard_mod.apply_guard(guard, context)
+        except guard_mod.GuardError as exc:
+            raise DraftError(f"{org['name']}: guard failed, drafting refused: {exc}") from exc
+        findings = findings + guard_findings
     if findings:
         fields = sorted({f.field for f in findings})
         with conn:
@@ -196,21 +206,36 @@ def draft_for_org(conn, model: Model, org_name: str, voice: str | None = None,
         if on_warning:
             on_warning(f"{org['name']}: removed suspicious text from {', '.join(fields)} "
                        f"(see audit log: injection_suspected)")
-    try:
-        reply = model.complete(SYSTEM_PROMPT, context, json_schema=DRAFT_SCHEMA)
-    except ModelError as exc:
-        raise DraftError(f"model failed for {org['name']}: {exc}") from exc
-    try:
+    tokens = sanitize.distinctive_tokens(findings, context)
+
+    def attempt(user_prompt: str):
+        try:
+            reply = model.complete(SYSTEM_PROMPT, user_prompt, json_schema=DRAFT_SCHEMA)
+        except ModelError as exc:
+            raise DraftError(f"model failed for {org['name']}: {exc}") from exc
         subject, body = parse_reply(reply.text)
-        leaked = sanitize.leaked_tokens(
-            f"{subject}\n{body}", sanitize.distinctive_tokens(findings, context)
-        )
+        leaked = sanitize.leaked_tokens(f"{subject}\n{body}", tokens)
         if leaked:
             raise DraftError(f"draft repeats text from a suspected injection: {leaked}")
+        return reply, subject, body
+
+    try:
+        reply = None
+        try:
+            reply, subject, body = attempt(context)
+        except DraftError as first:
+            if not repair or isinstance(first.__cause__, ModelError):
+                raise
+            retry = (f"{context}\n\nYour previous reply was rejected: {first}. "
+                     "Fix that and reply with JSON only. Do not use placeholders; "
+                     "end with a plain sign-off using the sender's name from the voice note, or no name.")
+            reply, subject, body = attempt(retry)
     except DraftError as exc:
+        if isinstance(exc.__cause__, ModelError):
+            raise
         with conn:
             _audit(conn, "agent", "draft_rejected_by_guardrail", "org", org["id"],
-                   {"reason": str(exc), "model": reply.model})
+                   {"reason": str(exc), "model": getattr(reply, "model", model.name)})
         raise DraftError(f"{org['name']}: {exc}") from exc
 
     with conn:
@@ -226,12 +251,14 @@ def draft_for_org(conn, model: Model, org_name: str, voice: str | None = None,
 
 
 def draft_followups(conn, model: Model, pack: str | None = None, voice: str | None = None,
-                    min_days: int = 7) -> list[DraftOutcome]:
+                    min_days: int = 7, guard: Model | None = None,
+                    repair: bool = False) -> list[DraftOutcome]:
     """Draft for every org due a follow-up. One org failing never stops the rest."""
     outcomes = []
     for row in pipeline.followups(conn, pack, min_days):
         try:
-            outcomes.append(DraftOutcome(row["name"], draft_for_org(conn, model, row["name"], voice)))
+            outcomes.append(DraftOutcome(row["name"], draft_for_org(conn, model, row["name"], voice,
+                                                         guard=guard, repair=repair)))
         except (DraftError, PipelineError) as exc:
             outcomes.append(DraftOutcome(row["name"], None, str(exc)))
     return outcomes

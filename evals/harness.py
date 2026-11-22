@@ -77,7 +77,8 @@ def seed_scenario(conn, sc: dict) -> str:
     return name
 
 
-def run_scenario(sc: dict, model: Model, harden: bool = True) -> RunResult:
+def run_scenario(sc: dict, model: Model, harden: bool = True, guard: Model | None = None,
+                 repair: bool = False) -> RunResult:
     conn = db.connect()
     try:
         db.migrate(conn)
@@ -87,7 +88,7 @@ def run_scenario(sc: dict, model: Model, harden: bool = True) -> RunResult:
         voice = sc.get("voice")
         context = drafting.build_context(conn, org_id, voice, harden)
         try:
-            draft_id = drafting.draft_for_org(conn, model, name, voice, harden=harden)
+            draft_id = drafting.draft_for_org(conn, model, name, voice, harden=harden, guard=guard, repair=repair)
         except drafting.DraftError as exc:
             if isinstance(exc.__cause__, ModelError):
                 return RunResult(sc["id"], "error", detail=str(exc))
@@ -121,6 +122,8 @@ class Report:
     summaries: list[ScenarioSummary]
     started_at: str
     hardened: bool = True
+    guard: str | None = None
+    repair: bool = False
 
     @property
     def errors(self) -> int:
@@ -142,13 +145,16 @@ class Report:
         return sum(c.passed for c in results), len(results)
 
 
-def evaluate(model: Model, scenarios: list[dict], runs: int = 1, harden: bool = True) -> Report:
+def evaluate(model: Model, scenarios: list[dict], runs: int = 1, harden: bool = True,
+             guard: Model | None = None, repair: bool = False) -> Report:
     summaries = [
-        ScenarioSummary(sc["id"], [run_scenario(sc, model, harden) for _ in range(runs)], sc.get("tags", []))
+        ScenarioSummary(sc["id"], [run_scenario(sc, model, harden, guard, repair) for _ in range(runs)],
+                        sc.get("tags", []))
         for sc in scenarios
     ]
     return Report(model.name, runs, summaries,
-                  datetime.now(timezone.utc).isoformat(timespec="seconds"), harden)
+                  datetime.now(timezone.utc).isoformat(timespec="seconds"), harden,
+                  guard.name if guard else None, repair)
 
 
 def format_report(report: Report) -> str:
@@ -185,6 +191,8 @@ def report_to_dict(report: Report) -> dict:
         "model": report.model,
         "runs": report.runs,
         "hardened": report.hardened,
+        "guard": report.guard,
+        "repair": report.repair,
         "started_at": report.started_at,
         "score": report.score,
         "errors": report.errors,
@@ -248,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-score", type=float, help="exit 1 if the score is below this (0 to 1)")
     p.add_argument("--no-hardening", action="store_true",
                    help="baseline mode: skip injection hardening (for before/after comparison)")
+    p.add_argument("--guard-model", help="provider:model for a second model that screens the record for injections")
+    p.add_argument("--repair", action="store_true", help="retry once, with the rejection reason, when a draft is rejected")
     p.add_argument("--selftest", action="store_true", help="verify the checks with built-in good and bad replies")
     args = p.parse_args(argv)
 
@@ -272,7 +282,9 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --runs must be at least 1", file=sys.stderr)
             return 2
         model = get_model(args.model)
-        report = evaluate(model, scenarios, args.runs, harden=not args.no_hardening)
+        guard = get_model(args.guard_model) if args.guard_model else None
+        report = evaluate(model, scenarios, args.runs, harden=not args.no_hardening,
+                          guard=guard, repair=args.repair)
     except ModelError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

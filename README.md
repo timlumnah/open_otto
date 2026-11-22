@@ -200,22 +200,22 @@ It is not aimed at sales teams, and the license is chosen to keep it that way (s
 open_otto/
   migrations/     plain .sql schema files (the SQL is the point, no ORM)
   core/           pipeline logic: stages, tasks, follow-up scheduler
-  agent/          drafting, research, and prioritization; tool-using agent loop
+  agent/          drafting, model backends, injection filter, guard model
   packs/          per-use-case config: stages, prompts, templates
     jobs/
     gigs/
     freelance/
   evals/          test harness that scores agent drafts
-  cli/            command-line interface (v0.1)
+  cli/            command-line interface
 ```
 
-**Core schema (draft):** `orgs`, `contacts`, `interactions`, `tasks`, `pipeline_stages`, `drafts`, `audit_log`.
+**Core schema:** `orgs`, `contacts`, `interactions`, `tasks`, `pipeline_stages`, `drafts`, `audit_log`.
 
 **Packs** change the vocabulary and prompts without touching the engine. A gig pack has stages like `prospect, pitched, held, booked, played`; a job pack has `saved, applied, screen, interview, offer`.
 
-**Agent layer:** given the database state, the agent decides who needs a follow-up, researches the target, and writes a draft in the user's voice. Drafts land in an approval queue.
+**Agent layer:** the follow-up scheduler (plain code) finds who has gone quiet; the agent reads that org's record and history and writes a draft in the user's voice. Drafts land in an approval queue and nothing is sent without a human.
 
-**Evals:** a fixed set of sample situations with checks for tone, accuracy against the stored record, and no invented facts. Run with `pytest`.
+**Evals:** a fixed set of sample situations with mechanical checks for invented facts, a clear ask, filler, and planted injections. Run with `python -m evals`.
 
 ## Stack
 
@@ -225,20 +225,16 @@ open_otto/
 - pytest
 - Optional later: FastAPI + a small local web UI
 
-## Roadmap
+## Status and open work
 
-- [x] v0.1 (done): schema, migration runner, CLI (init, import, list, followups, log, stage, task, drafts, show, approve, reject, sent), gigs demo data
-- [x] v0.2 agent drafting (done): provider-agnostic model interface (Anthropic, Ollama, fake for tests), guardrails, per-pack prompts, approval queue. 164 tests.
-- [x] v0.2 eval harness (done): 15 scenarios, 8 mechanical checks, self-testing.
-- [x] Ollama backend verified live against a local model (see results above)
-- [x] Prompt-injection hardening (strip, remind, echo check) with a before/after ablation: detectable injections 20/25 to 0/25 obeyed on qwen2.5:7b
-- [x] OpenRouter / OpenAI-compatible backend and `evals/run_matrix.sh` (tested against fake HTTP only, not yet against a real account)
-- [ ] Anthropic backend: tested against fake HTTP only, not yet against a real account
-- [ ] Comparison table with hosted models. Blocked on credits: the OpenRouter key authenticates but the account has never purchased credits (HTTP 402), and `:free` models were rate-limited or returned empty text. Next step: buy the minimum credit, run a one-scenario smoke test, then `evals/run_matrix.sh`.
-- [ ] Stronger defense for paraphrased injections (evasive scenarios: 9/15 still obeyed)
-- [ ] v0.3: jobs pack and freelance pack
-- [ ] v0.4: local web UI
-- [ ] Later: optional Salesforce export/sync via REST API (Developer Edition)
+Built and tested: schema and migrations, CLI, AI drafting with an approval queue, four model backends (Ollama, OpenRouter, OpenAI-compatible, Anthropic), prompt-injection hardening with a guard model, and the eval harness with results for four models (see Evals above).
+
+Not done, stated plainly:
+
+- **Anthropic backend is not live-tested.** Claude was only exercised through OpenRouter; the direct API path is covered by tests against fake HTTP.
+- **The guard is evaluated on scenarios I wrote.** A held-out set of injections is the honest next test.
+- **Jobs and freelance packs are thin.** Stage definitions and prompt guidance exist, with 2 and 1 eval scenarios. Demo data and templates exist only for the gigs pack (12 of the 15 scenarios).
+- **No web UI.** It is a CLI. A small local UI is possible later; so is an optional Salesforce export.
 
 ## Non-goals
 
